@@ -1,33 +1,6 @@
 //! Push-based bitcoin protocol codecs using the `push_decode` library.
 //!
-//! # RPIT vs. Type Wrappers
-//!
-//! This library uses RPIT (Return Position Impl Trait) for decoder functions rather than
-//! concrete wrapper types. This shields the caller from the gnarly types of the composed
-//! codecs, but also makes it so they are not name-able. This shouldn't be too much of an
-//! issues since the codecs are designed to be consumed quickly by the callers, not held
-//! onto in a struct.
-//!
-//! ```rust,ignore
-//! // Type wrapper approach - wraps the complex composed type:
-//! use push_decode::{U32Le, ArrayDecoder, Chain};
-//!
-//! pub struct HeaderDecoder {
-//!     inner: Chain<Chain<Chain<ArrayDecoder<4>, ArrayDecoder<12>>, U32Le>, ArrayDecoder<4>>,
-//! }
-//!
-//! impl HeaderDecoder {
-//!     pub fn new() -> Self {
-//!         let inner = ArrayDecoder::<4>
-//!             .chain(ArrayDecoder::<12>)
-//!             .chain(U32Le)
-//!             .chain(ArrayDecoder::<4>);
-//!         Self { inner }
-//!     }
-//! }
-//! ```
-//!
-//! # Caller I/O Ergonomics
+//! ## Caller I/O Ergonomics
 //!
 //! The codecs are sans-io, which places the burden on the caller to "push" bytes
 //! in to the decoder and "pull" bytes through the encoder. However, the [`push_decode`]
@@ -35,26 +8,36 @@
 //! make these discoverable for callers.
 //!
 //! 1. Document how a calling crate should depend on [`push_decode`] with its I/O of
-//! choice feature flag enabled (e.g. `std`) and then import the I/O driver.
+//!    choice feature flag enabled (e.g. `std`) and then import the I/O driver.
 //! 2. Add extension traits to the library which delegate to [`push_decode`] drivers.
 
 #![no_std]
 
+extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-extern crate alloc;
-
-use alloc::vec::Vec;
-use bitcoin::consensus::{encode, Decodable};
-use bitcoin::network::message::{CommandString, NetworkMessage};
-use bitcoin::network::Magic;
-use bitcoin::Network;
-use push_decode::{Decoder, PushDecodeError};
+use bitcoin::{
+    consensus::encode,
+    p2p::{
+        message::{CommandString, NetworkMessage, RawNetworkMessage},
+        Magic,
+    },
+    Network,
+};
+use either::Either;
+use push_decode::{
+    decoders::{
+        combinators::{Chain, Then},
+        ByteArrayDecoder, ByteVecDecoder, IntDecoder,
+    },
+    int::LittleEndian,
+    Decoder,
+};
 
 /// A decoded Bitcoin message header.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
+struct Header {
     /// Network magic bytes.
     pub magic: Magic,
     /// Command name.
@@ -65,75 +48,140 @@ pub struct Header {
     pub checksum: [u8; 4],
 }
 
-/// Creates a header decoder using push_decode's composition.
-fn header_decoder() -> impl Decoder<Item = Header, Error = DecodeError> {
-    use push_decode::{ArrayDecoder, U32Le};
+// Type alias for the decoder chain that parses raw header bytes
+type RawHeaderDecoder = Chain<
+    Chain<Chain<ByteArrayDecoder<4>, ByteArrayDecoder<12>>, IntDecoder<u32, LittleEndian>>,
+    ByteArrayDecoder<4>,
+>;
 
-    // Decode: magic (4 bytes) + command (12 bytes) + length (4 bytes) + checksum (4 bytes)
-    ArrayDecoder::<4>
-        .chain(ArrayDecoder::<12>)
-        .chain(U32Le)
-        .chain(ArrayDecoder::<4>)
-        .map(|(((magic_bytes, command_bytes), length), checksum)| {
-            let magic = Magic::from_bytes(&magic_bytes);
-            let command = CommandString::try_from(&command_bytes[..])
-                .map_err(|_| DecodeError::InvalidCommand)?;
-
-            if length > 32 * 1024 * 1024 {
-                return Err(DecodeError::PayloadTooLarge(length as usize));
-            }
-
-            Ok(Header {
-                magic,
-                command,
-                length,
-                checksum,
-            })
-        })
-        .and_then(|result| result)
+/// Decoder for bitcoin v1 transport message headers.
+struct HeaderDecoder {
+    inner: RawHeaderDecoder,
+    expected_magic: Magic,
 }
 
-/// Creates a payload decoder that validates checksum and returns raw bytes.
-fn payload_decoder(header: Header) -> impl Decoder<Item = Vec<u8>, Error = DecodeError> {
-    use push_decode::VecDecoder;
-
-    VecDecoder::new(header.length as usize)
-        .map(move |payload| {
-            let checksum = sha256d_checksum(&payload);
-            if checksum != header.checksum {
-                Err(DecodeError::InvalidChecksum)
-            } else {
-                Ok(payload)
-            }
-        })
-        .and_then(|result| result)
+impl HeaderDecoder {
+    fn new(expected_magic: Magic) -> Self {
+        Self {
+            inner: ByteArrayDecoder::<4>::new()
+                .chain(ByteArrayDecoder::<12>::new())
+                .chain(IntDecoder::<u32, LittleEndian>::new())
+                .chain(ByteArrayDecoder::<4>::new()),
+            expected_magic,
+        }
+    }
 }
 
-/// Creates a V1 frame decoder for a specific network.
-pub fn v1_frame_decoder(
-    network: Network,
-) -> impl Decoder<Item = NetworkMessage, Error = DecodeError> {
-    header_decoder()
-        .and_then(move |header| {
-            // Validate network
-            if header.magic != network.magic() {
-                return Err(DecodeError::WrongMagic {
-                    expected: network.magic(),
-                    actual: header.magic,
-                });
-            }
-            Ok(header)
+impl Decoder for HeaderDecoder {
+    type Value = Header;
+    type Error = DecodeError;
+
+    fn decode_chunk(&mut self, bytes: &mut &[u8]) -> Result<(), Self::Error> {
+        self.inner.decode_chunk(bytes)?;
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Value, Self::Error> {
+        // Extract the raw values from the inner decoder and validate.
+        let (((magic_bytes, command_bytes), length), checksum) = self.inner.end()?;
+        let magic = Magic::from_bytes(magic_bytes);
+        let command = encode::deserialize::<CommandString>(&command_bytes[..])
+            .map_err(|_| DecodeError::InvalidCommand)?;
+
+        if magic != self.expected_magic {
+            return Err(DecodeError::WrongMagic {
+                expected: self.expected_magic,
+                actual: magic,
+            });
+        }
+
+        if length > 32 * 1024 * 1024 {
+            return Err(DecodeError::PayloadTooLarge(length as usize));
+        }
+
+        Ok(Header {
+            magic,
+            command,
+            length,
+            checksum,
         })
-        .chain(|header| payload_decoder(header))
-        .map(|(_header, payload_bytes)| {
-            NetworkMessage::consensus_decode(&mut &payload_bytes[..])
-                .map_err(|e| DecodeError::InvalidPayload(e))
-        })
-        .and_then(|result| result)
+    }
+}
+
+/// Decoder for Bitcoin message payloads
+struct PayloadDecoder {
+    inner: ByteVecDecoder,
+    expected_checksum: [u8; 4],
+}
+
+impl PayloadDecoder {
+    pub fn new(header: Header) -> Self {
+        Self {
+            inner: ByteVecDecoder::new(header.length as usize),
+            expected_checksum: header.checksum,
+        }
+    }
+}
+
+impl Decoder for PayloadDecoder {
+    type Value = NetworkMessage;
+    type Error = DecodeError;
+
+    fn decode_chunk(&mut self, bytes: &mut &[u8]) -> Result<(), Self::Error> {
+        self.inner.decode_chunk(bytes)?;
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Value, Self::Error> {
+        let payload_bytes = self.inner.end()?;
+
+        // Validate checksum
+        let checksum = sha256d_checksum(&payload_bytes);
+        if checksum != self.expected_checksum {
+            return Err(DecodeError::InvalidChecksum);
+        }
+
+        // Decode the network message
+        let message = encode::deserialize::<RawNetworkMessage>(&payload_bytes[..])
+            .map_err(DecodeError::InvalidPayload)?;
+        Ok(message.into_payload())
+    }
+}
+
+// Type alias for the decoder chain.
+type V1DecoderInner = Then<HeaderDecoder, PayloadDecoder, fn(Header) -> PayloadDecoder>;
+
+/// Decoder for Bitcoin V1 protocol messages
+pub struct V1MessageDecoder {
+    inner: V1DecoderInner,
+}
+
+impl V1MessageDecoder {
+    /// Creates a new V1 message decoder for the specified network
+    pub fn new(network: Network) -> Self {
+        Self {
+            inner: HeaderDecoder::new(network.magic()).then(PayloadDecoder::new),
+        }
+    }
+}
+
+impl Decoder for V1MessageDecoder {
+    type Value = NetworkMessage;
+    type Error = DecodeError;
+
+    fn decode_chunk(&mut self, bytes: &mut &[u8]) -> Result<(), Self::Error> {
+        self.inner.decode_chunk(bytes)?;
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Value, Self::Error> {
+        let value = self.inner.end()?;
+        Ok(value)
+    }
 }
 
 /// Errors that can occur during decoding.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DecodeError {
     /// Wrong network magic bytes.
     WrongMagic { expected: Magic, actual: Magic },
@@ -143,10 +191,8 @@ pub enum DecodeError {
     PayloadTooLarge(usize),
     /// Checksum verification failed.
     InvalidChecksum,
-    /// Header incomplete.
-    IncompleteHeader,
-    /// Payload incomplete.
-    IncompletePayload,
+    /// Message incomplete.
+    IncompleteMessage,
     /// Failed to decode payload contents into a valid NetworkMessage.
     InvalidPayload(encode::Error),
 }
@@ -155,14 +201,32 @@ impl core::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             DecodeError::WrongMagic { expected, actual } => {
-                write!(f, "wrong magic: expected {:?}, got {:?}", expected, actual)
+                write!(f, "wrong magic: expected {expected:?}, got {actual:?}")
             }
             DecodeError::InvalidCommand => write!(f, "invalid command string"),
-            DecodeError::PayloadTooLarge(size) => write!(f, "payload too large: {} bytes", size),
+            DecodeError::PayloadTooLarge(size) => write!(f, "payload too large: {size} bytes"),
             DecodeError::InvalidChecksum => write!(f, "checksum verification failed"),
-            DecodeError::IncompleteHeader => write!(f, "incomplete header"),
-            DecodeError::IncompletePayload => write!(f, "incomplete payload"),
-            DecodeError::InvalidPayload(e) => write!(f, "invalid payload: {}", e),
+            DecodeError::IncompleteMessage => write!(f, "incomplete message"),
+            DecodeError::InvalidPayload(e) => write!(f, "invalid payload: {e}"),
+        }
+    }
+}
+
+impl From<push_decode::error::UnexpectedEnd> for DecodeError {
+    fn from(_: push_decode::error::UnexpectedEnd) -> Self {
+        DecodeError::IncompleteMessage
+    }
+}
+
+impl<L, R> From<Either<L, R>> for DecodeError
+where
+    DecodeError: From<L>,
+    DecodeError: From<R>,
+{
+    fn from(err: Either<L, R>) -> Self {
+        match err {
+            Either::Left(l) => DecodeError::from(l),
+            Either::Right(r) => DecodeError::from(r),
         }
     }
 }

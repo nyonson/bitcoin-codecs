@@ -16,7 +16,9 @@ std = ["bitcoin/std", "push_decode/std"]
 
 [dependencies]
 bitcoin = { version = "0.32", default-features = false }
-push_decode = { version = "0.3", default-features = false }
+push_decode = { version = "0.4", default-features = false, features = ["alloc"] }
+either = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["net", "io-util", "macros", "rt-multi-thread"] }
+push_decode = { version = "0.4", features = ["tokio"] }
