@@ -11,6 +11,8 @@
 //!    choice feature flag enabled (e.g. `std`) and then import the I/O driver.
 //! 2. Add extension traits to I/O types which delegate to [`push_decode`] drivers.
 //! 3. Add struct wrappers which own an I/O source/sink and delegate.
+//! 4. Keep the library agnostic and have helper crates (e.g. `bitcoin-codecs-tokio`)
+//!    which flip on the [`push_decode`] flags and add wrappers.
 //!
 //! [`push_decode`]: https://docs.rs/push_decode
 
