@@ -35,12 +35,42 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run the test suite.
-@test:
-  # Run all tests.
-  # "--all-features" for highest coverage, assuming features are additive so no conflicts.
-  # "--all-targets" runs `lib` (unit, integration), `bin`, `test`, `bench`, `example` tests, but not doc code. 
-  cargo +{{STABLE_TOOLCHAIN}} test --all-features --all-targets
+# Run a test suite: features, msrv, constraints, no-std, or all.
+@test suite="features":
+  just _test-{{suite}}
+
+# Run all test suites.
+@_test-all: _test-features _test-msrv _test-constraints
+
+# Test library with feature flag matrix compatability.
+@_test-features:
+  # Test the extremes: all features enabled as well as none. If features are additive, this should expose conflicts.
+  # If non-additive features (mutually exclusive) are defined, more specific commands are required.
+  # Run all targets except benches which needs the nightly toolchain.
+  cargo +{{STABLE_TOOLCHAIN}} test --no-default-features --lib --bins --tests --examples
+  cargo +{{STABLE_TOOLCHAIN}} test --all-features --lib --bins --tests --examples
+  cargo +{{STABLE_TOOLCHAIN}} test --all-features --doc
+
+# Check code with MSRV compiler.
+@_test-msrv:
+  # Handles creating sandboxed environments to ensure no newer binaries sneak in.
+  cargo install cargo-msrv@0.18.4
+  cargo msrv --manifest-path protocol/Cargo.toml verify --all-features
+  cargo msrv --manifest-path traffic/Cargo.toml verify --all-features
+
+# Check minimum and maximum dependency contraints.
+@_test-constraints:
+  # Ensure that the workspace code works with dependency versions at both extremes. This checks
+  # that we are not unintentionally using new feautures of a dependency or removed ones.
+  # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
+  # Enabling "--all-features" so all dependencies are checked.
+  # Clear any previously resolved versions and re-resolve to the minimums.
+  rm -f Cargo.lock
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features -Z direct-minimal-versions
+  # Clear again and check the maximums by ignoring any rust-version caps. 
+  rm -f Cargo.lock
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features --ignore-rust-version
+  rm -f Cargo.lock
 
 # Publish a new version.
 @publish version remote="upstream":

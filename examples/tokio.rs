@@ -18,9 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer.flush().await?;
 
     loop {
-        let decoder = V1MessageDecoder::new(Network::Bitcoin);
-
-        match decode_tokio_with(&mut reader, decoder).await {
+        match decode_tokio_with(&mut reader, V1MessageDecoder::new(Network::Bitcoin)).await {
             Ok(message) => {
                 println!("Received: {:?}", message.cmd());
 

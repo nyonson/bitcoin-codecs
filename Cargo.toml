@@ -10,13 +10,9 @@ repository = "https://github.com/njohnson/bitcoin-codecs"
 keywords = ["bitcoin", "codec", "protocol", "p2p"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 
-[features]
-default = ["std"]
-std = ["bitcoin/std", "push_decode/std"]
-
 [dependencies]
-bitcoin = { version = "0.32", default-features = false }
-push_decode = { version = "0.4", default-features = false, features = ["alloc"] }
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+push_decode = { version = "0.4", default-features = false, features = ["std"] }
 either = "1"
 
 [dev-dependencies]

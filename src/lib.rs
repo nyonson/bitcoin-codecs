@@ -10,13 +10,6 @@
 //! 1. Document how a calling crate should depend on [`push_decode`] with its I/O of
 //!    choice feature flag enabled (e.g. `std`) and then import the I/O driver.
 //! 2. Add extension traits to the library which delegate to [`push_decode`] drivers.
-
-#![no_std]
-
-extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
-
 use bitcoin::{
     consensus::encode,
     p2p::{
@@ -231,7 +224,6 @@ where
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for DecodeError {}
 
 /// Calculate SHA256d checksum (first 4 bytes of SHA256(SHA256(data))).

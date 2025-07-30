@@ -17,8 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer.flush()?;
 
     loop {
-        let decoder = V1MessageDecoder::new(Network::Bitcoin);
-        let message = decode_sync_with(&mut reader, decoder)?;
+        let message = decode_sync_with(&mut reader, V1MessageDecoder::new(Network::Bitcoin))?;
 
         println!("Received: {:?}", message.cmd());
 
