@@ -11,11 +11,11 @@
 //! ```rust,ignore
 //! // Type wrapper approach - wraps the complex composed type:
 //! use push_decode::{U32Le, ArrayDecoder, Chain};
-//! 
+//!
 //! pub struct HeaderDecoder {
 //!     inner: Chain<Chain<Chain<ArrayDecoder<4>, ArrayDecoder<12>>, U32Le>, ArrayDecoder<4>>,
 //! }
-//! 
+//!
 //! impl HeaderDecoder {
 //!     pub fn new() -> Self {
 //!         let inner = ArrayDecoder::<4>
@@ -46,9 +46,9 @@ extern crate std;
 extern crate alloc;
 
 use alloc::vec::Vec;
-use bitcoin::consensus::{Decodable, encode};
+use bitcoin::consensus::{encode, Decodable};
+use bitcoin::network::message::{CommandString, NetworkMessage};
 use bitcoin::network::Magic;
-use bitcoin::network::message::{NetworkMessage, CommandString};
 use bitcoin::Network;
 use push_decode::{Decoder, PushDecodeError};
 
@@ -67,8 +67,8 @@ pub struct Header {
 
 /// Creates a header decoder using push_decode's composition.
 fn header_decoder() -> impl Decoder<Item = Header, Error = DecodeError> {
-    use push_decode::{U32Le, ArrayDecoder};
-    
+    use push_decode::{ArrayDecoder, U32Le};
+
     // Decode: magic (4 bytes) + command (12 bytes) + length (4 bytes) + checksum (4 bytes)
     ArrayDecoder::<4>
         .chain(ArrayDecoder::<12>)
@@ -78,11 +78,11 @@ fn header_decoder() -> impl Decoder<Item = Header, Error = DecodeError> {
             let magic = Magic::from_bytes(&magic_bytes);
             let command = CommandString::try_from(&command_bytes[..])
                 .map_err(|_| DecodeError::InvalidCommand)?;
-            
+
             if length > 32 * 1024 * 1024 {
                 return Err(DecodeError::PayloadTooLarge(length as usize));
             }
-            
+
             Ok(Header {
                 magic,
                 command,
@@ -96,7 +96,7 @@ fn header_decoder() -> impl Decoder<Item = Header, Error = DecodeError> {
 /// Creates a payload decoder that validates checksum and returns raw bytes.
 fn payload_decoder(header: Header) -> impl Decoder<Item = Vec<u8>, Error = DecodeError> {
     use push_decode::VecDecoder;
-    
+
     VecDecoder::new(header.length as usize)
         .map(move |payload| {
             let checksum = sha256d_checksum(&payload);
@@ -110,7 +110,9 @@ fn payload_decoder(header: Header) -> impl Decoder<Item = Vec<u8>, Error = Decod
 }
 
 /// Creates a V1 frame decoder for a specific network.
-pub fn v1_frame_decoder(network: Network) -> impl Decoder<Item = NetworkMessage, Error = DecodeError> {
+pub fn v1_frame_decoder(
+    network: Network,
+) -> impl Decoder<Item = NetworkMessage, Error = DecodeError> {
     header_decoder()
         .and_then(move |header| {
             // Validate network
@@ -170,8 +172,8 @@ impl std::error::Error for DecodeError {}
 
 /// Calculate SHA256d checksum (first 4 bytes of SHA256(SHA256(data))).
 fn sha256d_checksum(data: &[u8]) -> [u8; 4] {
-    use bitcoin::hashes::{Hash, sha256d};
-    
+    use bitcoin::hashes::{sha256d, Hash};
+
     let hash = sha256d::Hash::hash(data);
     let mut checksum = [0u8; 4];
     checksum.copy_from_slice(&hash[..4]);

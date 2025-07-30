@@ -1,7 +1,7 @@
 //! Example: Synchronous TCP Bitcoin client
 
-use bitcoin::Network;
 use bitcoin::network::message::NetworkMessage;
+use bitcoin::Network;
 use bitcoin_codecs::v1_frame_decoder;
 use push_decode::decode_sync_with;
 use std::io::{BufReader, Write};
@@ -22,15 +22,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let decoder = v1_frame_decoder(Network::Bitcoin);
         let message = decode_sync_with(&mut reader, decoder)?;
-        
+
         println!("Received: {:?}", message.cmd());
-        
+
         match message {
             NetworkMessage::Version(version) => {
                 println!("  Version: {}", version.version);
                 println!("  User Agent: {}", version.user_agent);
                 println!("  Services: {:?}", version.services);
-                
+
                 // Send verack
                 let verack = create_verack_message();
                 writer.write_all(&verack)?;
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             NetworkMessage::Ping(nonce) => {
                 println!("  Ping nonce: {}", nonce);
-                
+
                 // Send pong
                 let pong = create_pong_message(nonce);
                 writer.write_all(&pong)?;

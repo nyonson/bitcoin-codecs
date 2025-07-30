@@ -1,11 +1,11 @@
 //! Example: Async usage with Tokio
 
-use bitcoin::Network;
 use bitcoin::network::message::NetworkMessage;
+use bitcoin::Network;
 use bitcoin_codecs::v1_frame_decoder;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncWriteExt, BufReader};
 use push_decode::decode_tokio_with;
+use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,25 +13,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = TcpStream::connect("127.0.0.1:8333").await?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    
+
     // Send version message
     let version_msg = create_version_message();
     writer.write_all(&version_msg).await?;
     writer.flush().await?;
-    
+
     // Read messages in a loop
     loop {
         let decoder = v1_frame_decoder(Network::Bitcoin);
-        
+
         match decode_tokio_with(&mut reader, decoder).await {
             Ok(message) => {
                 println!("Received: {:?}", message.cmd());
-                
+
                 match message {
                     NetworkMessage::Version(version) => {
                         println!("  Version: {}", version.version);
                         println!("  User Agent: {}", version.user_agent);
-                        
+
                         // Send verack
                         let verack = create_verack_message();
                         writer.write_all(&verack).await?;
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     NetworkMessage::Ping(nonce) => {
                         println!("  Ping nonce: {}", nonce);
-                        
+
                         // Send pong
                         let pong = create_pong_message(nonce);
                         writer.write_all(&pong).await?;
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    
+
     Ok(())
 }
 
