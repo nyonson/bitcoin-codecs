@@ -1,4 +1,4 @@
-//! Push-based bitcoin protocol codecs using the `push_decode` library.
+//! Push-based bitcoin protocol codecs using the [`push_decode`] library.
 //!
 //! ## Caller I/O Ergonomics
 //!
@@ -9,7 +9,11 @@
 //!
 //! 1. Document how a calling crate should depend on [`push_decode`] with its I/O of
 //!    choice feature flag enabled (e.g. `std`) and then import the I/O driver.
-//! 2. Add extension traits to the library which delegate to [`push_decode`] drivers.
+//! 2. Add extension traits to I/O types which delegate to [`push_decode`] drivers.
+//! 3. Add struct wrappers which own an I/O source/sink and delegate.
+//!
+//! [`push_decode`]: https://docs.rs/push_decode
+
 use bitcoin::{
     consensus::encode,
     p2p::{
@@ -108,7 +112,7 @@ struct PayloadDecoder {
 }
 
 impl PayloadDecoder {
-    pub fn new(header: Header) -> Self {
+    fn new(header: Header) -> Self {
         Self {
             inner: ByteVecDecoder::new(header.length as usize),
             expected_checksum: header.checksum,
